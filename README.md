@@ -1,14 +1,14 @@
 # CodeSonar Plugin
-This Jenkins plugin provides integration for grammatech CodeSonar.
-It allows to change the build result depending on the analysis data acquired from the CodeSonar hub.
-This plugin is developed by Praqma and sponsored by GrammaTech.
 
-For more information about the plugin visit the wiki site [wiki site](https://wiki.jenkins-ci.org/display/JENKINS/CodeSonar+Plugin)
+회사에서 사용하기 위해 수정한 CodeSonar Plugin 입니다.
 
-### Contributing
+## 작업
 
-We happily accept pull request on [Praqma's Github repository](https://github.com/Praqma/codesonar-plugin)  
-This is used to release from, and accepting pull request. **Do not make pull request on [Jenkins CI on Github](https://github.com/jenkinsci/codesonar-plugin)** - it is only used as final archive for released versions.
+2018-07-03
+  * CodeSonar 리포트(pdf, xml, csv)를 Artifacs 경로에 저장하는 기능 추가
+  * Slave에서 동작한 작업도 적용가능하도록 기능 구현
 
-
-
+## 작성자
+이름: 서형경
+E-Mail: seohk@gmail.com
+GitHub: https://github.com/hyeongkyeong/
