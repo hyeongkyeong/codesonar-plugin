@@ -6,6 +6,7 @@ import com.cloudbees.plugins.credentials.common.*;
 import com.cloudbees.plugins.credentials.domains.DomainRequirement;
 import hudson.*;
 import hudson.model.*;
+import hudson.remoting.VirtualChannel;
 import hudson.security.ACL;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.BuildStepMonitor;
@@ -13,10 +14,17 @@ import hudson.tasks.Publisher;
 import hudson.tasks.Recorder;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
+import jenkins.model.ArtifactManager;
+import jenkins.security.MasterToSlaveCallable;
 import jenkins.tasks.SimpleBuildStep;
+import jenkins.util.BuildListenerAdapter;
+
 import org.apache.commons.collections.ListUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang.SystemUtils;
+import org.apache.http.client.fluent.Request;
 import org.javatuples.Pair;
 import org.jenkinsci.Symbol;
 import org.jenkinsci.plugins.codesonar.conditions.Condition;
@@ -30,10 +38,21 @@ import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.QueryParameter;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.Serializable;
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -44,11 +63,14 @@ import java.util.regex.Pattern;
  *
  * @author andrius
  */
-public class CodeSonarPublisher extends Recorder implements SimpleBuildStep  {
+public class CodeSonarPublisher extends Recorder implements SimpleBuildStep {
+	private static final long serialVersionUID = 1L;
     private static final Logger LOGGER = Logger.getLogger("totalWarningGraph");
     private String hubAddress;
     private String projectName;
     private String protocol = "http";
+    private String run_root_dir;
+    private String workspace_root_dir;
 
     private XmlSerializationService xmlSerializationService = null;
     private HttpService httpService = null;
@@ -62,6 +84,8 @@ public class CodeSonarPublisher extends Recorder implements SimpleBuildStep  {
     private List<Condition> conditions;
 
     private String credentialId;
+    
+    private TaskListener listener;
 
     @DataBoundConstructor
     public CodeSonarPublisher(List<Condition> conditions, String protocol, String hubAddress, String projectName, String credentialId) {
@@ -79,12 +103,19 @@ public class CodeSonarPublisher extends Recorder implements SimpleBuildStep  {
 
     @Override
     public void perform(Run<?, ?> run, FilePath workspace, Launcher launcher, TaskListener listener) throws InterruptedException, IOException {
-        xmlSerializationService = getXmlSerializationService();
+        
+    	listener.getLogger().println("-------------------[CodeSonar Plugin] Start -------------------");
+    	
+    	this.listener = listener;
+        this.run_root_dir = run.getRootDir().getPath();
+        this.workspace_root_dir = workspace.getRemote();
+    	xmlSerializationService = getXmlSerializationService();
         httpService = getHttpService();
         authenticationService = getAuthenticationService();
         metricsService = getMetricsService();
         proceduresService = getProceduresService();
         analysisServiceFactory = getAnalysisServiceFactory();
+        
         
         String expandedHubAddress = run.getEnvironment(listener).expand(Util.fixNull(hubAddress));
         String expandedProjectName = run.getEnvironment(listener).expand(Util.fixNull(projectName));
@@ -103,6 +134,7 @@ public class CodeSonarPublisher extends Recorder implements SimpleBuildStep  {
         
         authenticate(run, baseHubUri);
 
+        
         analysisServiceFactory = getAnalysisServiceFactory();
         analysisServiceFactory.setVersion(hubVersion);
         analysisService = analysisServiceFactory.getAnalysisService(httpService, xmlSerializationService);
@@ -121,6 +153,36 @@ public class CodeSonarPublisher extends Recorder implements SimpleBuildStep  {
         Analysis analysisNewWarnings = analysisService.getAnalysisFromUrlWithNewWarnings(analysisUrl);
         List<Pair<String, String>> conditionNamesAndResults = new ArrayList<Pair<String, String>>();
 
+        
+        /*  hkseo - start  */
+        
+        
+        String cs_hub_url = analysisUrl.substring(0,analysisUrl.indexOf("/analysis"));
+        String cs_analysis_number=analysisUrl.substring(analysisUrl.indexOf("analysis/")+9,analysisUrl.indexOf(".xml"));        
+    
+        //listener.getLogger().println("[CodeSonar Plugin] analysisUrl: "+analysisUrl);
+        //listener.getLogger().println("[CodeSonar Plugin] getRemote: "+workspace.getRemote());
+        //listener.getLogger().println("[CodeSonar Plugin] getBaseName: "+workspace.getBaseName());
+        //listener.getLogger().println("[CodeSonar Plugin] getName: "+workspace.getName());
+        //listener.getLogger().println("[CodeSonar Plugin] HostName: "+InetAddress.getLocalHost().getHostName());
+        //listener.getLogger().println("[CodeSonar Plugin] run.getRootDir: "+run.getRootDir());        
+     
+		SimpleDateFormat dateformat = new SimpleDateFormat("yyyyMMdd-HHmmss");
+        Date current = new Date();
+        HashMap<String, String> artifacts = new HashMap<String, String>();
+        //generate_report(workspace, artifacts, cs_hub_url+"/analysis/"+cs_analysis_number+".xml",expandedProjectName+"_"+dateformat.format(current)+".xml");
+        String analysisXmlUrl = analysisUrl.replace("?prj_filter=11","?filter=2&prj_filter=11");
+        String analysisCsvUrl = analysisXmlUrl.replace("xml", "csv");
+        listener.getLogger().println("[CodeSonar Plugin] analysisView: "+cs_hub_url+"/analysis/"+cs_analysis_number+".html");
+        listener.getLogger().println("[CodeSonar Plugin] analysisXmlUrl: "+analysisXmlUrl);
+        listener.getLogger().println("[CodeSonar Plugin] analysisCsvUrl: "+analysisCsvUrl);
+        //generate_report(workspace, artifacts, analysisXmlUrl ,expandedProjectName+"_"+dateformat.format(current)+".xml");
+        generate_report(workspace, artifacts, analysisXmlUrl ,"codesonar_results_data.xml");
+        //generate_report(workspace, artifacts, cs_hub_url+"/analysis/"+cs_analysis_number+".csv",expandedProjectName+"_"+dateformat.format(current)+".csv");
+        generate_report(workspace, artifacts, analysisCsvUrl,expandedProjectName+"_"+dateformat.format(current)+".csv");
+        generate_report(workspace, artifacts, cs_hub_url+"/report/aid-"+cs_analysis_number+"-analysis.pdf?&size=A4&orientation=landscape",expandedProjectName+"_"+dateformat.format(current)+".pdf");
+ 
+        
         CodeSonarBuildActionDTO buildActionDTO = new CodeSonarBuildActionDTO(analysisActiveWarnings,
                 analysisNewWarnings, metrics, procedures, baseHubUri);
 
@@ -138,9 +200,45 @@ public class CodeSonarPublisher extends Recorder implements SimpleBuildStep  {
         run.getAction(CodeSonarBuildAction.class).getBuildActionDTO()
                 .setConditionNamesAndResults(conditionNamesAndResults);
 
+        /*  hkseo  - end   */
+        
         authenticationService.signOut(baseHubUri);
+        
+        listener.getLogger().println("-------------------[CodeSonar Plugin] Finished -------------------");
+        
     }
-
+    
+    /*  hkseo  - start   */
+    private boolean generate_report(FilePath workspace, HashMap<String, String> artifacts, String file_url, String output_filename) throws IOException, InterruptedException {
+    	
+    	InputStream is = httpService.execute(Request.Get(file_url)).returnContent().asStream();
+    	
+    	// job run에 리포트 만들기
+    	File f_output_filename = new File(run_root_dir+File.separator+output_filename);
+    	FileOutputStream fos = new FileOutputStream(f_output_filename);
+    	
+    	byte[] buffer = new byte[1024];
+    	
+        int count = 0;
+        while((count=is.read(buffer,0,1024))!=-1) {
+        	fos.write(buffer, 0, count);
+        
+        }
+        
+        if(fos!=null) fos.close();
+        if(is!=null) is.close();
+        
+        File f_archive_dir = new File(run_root_dir+File.separator+"archive");
+        FileUtils.copyFileToDirectory(f_output_filename, f_archive_dir);
+        File f_archive_file_name=new File(run_root_dir+File.separator+"archive"+File.separator+output_filename);
+        if(f_archive_file_name.exists()) {
+        	listener.getLogger().println("[CodeSonar Plugin] "+output_filename+" 파일이 생성되었습니다.");        
+        }
+        
+        return true;
+    }
+    /*  hkseo  - end   */
+    
     private float getHubVersion(URI baseHubUri) throws AbortException {
         String info;
         try {
